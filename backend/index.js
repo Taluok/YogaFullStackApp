@@ -4,7 +4,7 @@ const port = process.env.PORT || 3000;
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
-
+const stripe = require('stripe')(process.env.PAYMENT_SECRET);
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -172,13 +172,13 @@ async function run() {
         });
 
         //informacion de cart con mail de usuario 
-        app.get('/cart/:email',async (req, res) => {
+        app.get('/cart/:email', async (req, res) => {
             const email = req.params.email;
-            const query = {userMail: email};
-            const production= {classId: 1};
-            const carts = await cartCollection.find(query, {production: production});
-            const classIds = carts.map((cart) =>new ObjectId(cart.classId));
-            const query2 = {_id: {$in: classIds}};
+            const query = { userMail: email };
+            const production = { classId: 1 };
+            const carts = await cartCollection.find(query, { production: production });
+            const classIds = carts.map((cart) => new ObjectId(cart.classId));
+            const query2 = { _id: { $in: classIds } };
             const result = await classesCollection.find(query2).toArray();
             res.send(result);
         })
@@ -186,23 +186,88 @@ async function run() {
         //eliminar item del carro
         app.delete('/delete-cart-item/:id'), async (req, res) => {
             const id = req.params.id;
-            const query = {classId: id};
+            const query = { classId: id };
             const result = await cartCollection.deleteOne(query);
             res.send(result);
         }
 
-        // Ruta raíz
-        app.get('/', (req, res) => {
-            res.send('Hello World!');
+        //Payment routes
+        app.post('/create-payment-intent', async (req, res) => {
+            const { price } = req.body;
+            const amount = parseInt(price) * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: "usd",
+                payment_method_type: ["card"],
         });
-
-        app.listen(port, () => {
-            console.log(`Example app listening on port ${port}`);
+        res.send({
+            clientSecret: paymentIntent.clientSecret,
         });
+    })
 
-    } catch (error) {
-        console.error('Error al conectar a MongoDB:', error);
-    }
+    //post payment info to db
+    app.post("/payment-info", async (req, res) => {
+        const paymentInfo = req.body;
+        const classesId = paymentInfo.classId;
+        const userId = paymentInfo.userEmail;
+        const signleClassId = req.query.classId;
+        let query;
+        if(signleClassId){
+            query = { classId: signleClassId, userMail: userEmail};
+        }else{
+            query = { classId: {$in: classesId}}
+        }
+        const classesQuery = {_id:{$in : classesId.map( id => new ObjectId(id))}};
+        const classes = await classesCollection.find(classesQuery).toArray();
+        const newEnrolledData = {
+            userEmail: userEmail,
+            classId: signleClassId.map(id => new ObjectId(id)),
+            trasnsactionId: paymentInfo.trasnsactionId,
+        };
+        const updateDoc = {
+            $set: {
+                totalEnrolled: classes.reduce((total, current) => total + current.totalEnrolled, 0 )+1 || 0,
+                availableSeats: classes.reduce((total, current) => total + current.availableSeats, 0)-1 || 0,
+            }
+        }
+        const updatedResult = await classesCollection.updateMany(classesQuery, updateDoc, {upsert : true})
+        const enrolledResult = await enrolledCollection.insertOne(newEnrolledData);
+        const deletedResult = await classesCollection.deleteMany(query);
+        const paymentResult = await paymentCollection.insertOne(paymentInfo);
+
+        res.send({paymentResult, deletedResult, enrolledResult,updatedResult});
+    })
+
+    //Obtener historial de pago
+    app.get("/payment-history/:email", async (req, res) => {
+        const email = req.params.email;
+        const query = { userEmail: email };
+        const result = await paymentCollection.find(query).sort({date: -1}).toArray();
+        res.send(result);
+    });
+
+    //payment history length
+    app.get("/payment-history-length/:email", async (req, res) => {
+        const email = req.params.email;
+        const query = { userEmail: email };
+        const total = await paymentCollection.countDocuments(query);
+        res.send({total});
+    });
+
+    //Enrollment Routes
+
+    // Ruta raíz
+    app.get('/', (req, res) => {
+        res.send('Hello World!');
+    });
+
+    app.listen(port, () => {
+        console.log(`Example app listening on port ${port}`);
+    });
+
+} catch (error) {
+    console.error('Error al conectar a MongoDB:', error);
+}
 }
 
 run().catch(console.dir);
