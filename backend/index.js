@@ -326,6 +326,25 @@ async function run() {
         });
 
         //Admin Status
+        app.get('/admin-status', async (req, res) => {
+            const approvedClasses = (await classesCollection.find({status: 'approved'})).toArray().length;
+            const pendingClasses = (await classesCollection.find({status: 'pending'})).toArray().length;
+            const instructors = (await userCollections.find({role: 'instructor'})).toArray().length;
+            const totalClasses = (await classesCollection.find()).toArray().length;
+            const totalEnrolled = (await enrolledCollection.find().toArray()).length;
+
+            const result = {
+                approvedClasses,
+                pendingClasses,
+                instructors,
+                totalClasses,
+                totalEnrolled
+            }
+
+            res.send(result)
+        })
+
+        //Get All Instructor
         
 
         // Ruta raíz
