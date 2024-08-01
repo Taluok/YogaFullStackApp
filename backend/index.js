@@ -5,6 +5,7 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.PAYMENT_SECRET);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -97,7 +98,7 @@ async function run() {
         });
 
         // Obtener clases aprobadas
-        app.get('/approved-classes', async (req, res) => {  // Añadido '/' al principio
+        app.get('/approved-classes', async (req, res) => {
             const query = { status: 'approved' };
             try {
                 const result = await classesCollection.find(query).toArray();
@@ -108,7 +109,7 @@ async function run() {
         });
 
         // Obtener detalles de una sola clase
-        app.get('/class/:id', async (req, res) => {  // Corregido '/class/id:' a '/class/:id'
+        app.get('/class/:id', async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
             try {
@@ -171,103 +172,175 @@ async function run() {
             }
         });
 
-        //informacion de cart con mail de usuario 
+        // Informacion de cart con mail de usuario 
         app.get('/cart/:email', async (req, res) => {
             const email = req.params.email;
             const query = { userMail: email };
-            const production = { classId: 1 };
-            const carts = await cartCollection.find(query, { production: production });
-            const classIds = carts.map((cart) => new ObjectId(cart.classId));
-            const query2 = { _id: { $in: classIds } };
-            const result = await classesCollection.find(query2).toArray();
-            res.send(result);
-        })
+            const projection = { classId: 1 };
+            try {
+                const carts = await cartCollection.find(query, { projection: projection }).toArray();
+                const classIds = carts.map((cart) => new ObjectId(cart.classId));
+                const query2 = { _id: { $in: classIds } };
+                const result = await classesCollection.find(query2).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener la información del carrito' });
+            }
+        });
 
-        //eliminar item del carro
-        app.delete('/delete-cart-item/:id'), async (req, res) => {
+        // Eliminar item del carro
+        app.delete('/delete-cart-item/:id', async (req, res) => {
             const id = req.params.id;
             const query = { classId: id };
-            const result = await cartCollection.deleteOne(query);
-            res.send(result);
-        }
+            try {
+                const result = await cartCollection.deleteOne(query);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al eliminar el item del carrito' });
+            }
+        });
 
-        //Payment routes
+        // Payment routes
         app.post('/create-payment-intent', async (req, res) => {
             const { price } = req.body;
             const amount = parseInt(price) * 100;
-            const paymentIntent = await stripe.paymentIntents.create({
-                amount: amount,
-                currency: "usd",
-                payment_method_type: ["card"],
-        });
-        res.send({
-            clientSecret: paymentIntent.clientSecret,
-        });
-    })
-
-    //post payment info to db
-    app.post("/payment-info", async (req, res) => {
-        const paymentInfo = req.body;
-        const classesId = paymentInfo.classId;
-        const userId = paymentInfo.userEmail;
-        const signleClassId = req.query.classId;
-        let query;
-        if(signleClassId){
-            query = { classId: signleClassId, userMail: userEmail};
-        }else{
-            query = { classId: {$in: classesId}}
-        }
-        const classesQuery = {_id:{$in : classesId.map( id => new ObjectId(id))}};
-        const classes = await classesCollection.find(classesQuery).toArray();
-        const newEnrolledData = {
-            userEmail: userEmail,
-            classId: signleClassId.map(id => new ObjectId(id)),
-            trasnsactionId: paymentInfo.trasnsactionId,
-        };
-        const updateDoc = {
-            $set: {
-                totalEnrolled: classes.reduce((total, current) => total + current.totalEnrolled, 0 )+1 || 0,
-                availableSeats: classes.reduce((total, current) => total + current.availableSeats, 0)-1 || 0,
+            try {
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: amount,
+                    currency: "usd",
+                    payment_method_types: ["card"],
+                });
+                res.send({
+                    clientSecret: paymentIntent.clientSecret,
+                });
+            } catch (error) {
+                res.status(500).send({ error: 'Error al crear el intento de pago' });
             }
-        }
-        const updatedResult = await classesCollection.updateMany(classesQuery, updateDoc, {upsert : true})
-        const enrolledResult = await enrolledCollection.insertOne(newEnrolledData);
-        const deletedResult = await classesCollection.deleteMany(query);
-        const paymentResult = await paymentCollection.insertOne(paymentInfo);
+        });
 
-        res.send({paymentResult, deletedResult, enrolledResult,updatedResult});
-    })
+        // Post payment info to db
+        app.post("/payment-info", async (req, res) => {
+            const paymentInfo = req.body;
+            const classesId = paymentInfo.classId;
+            const userEmail = paymentInfo.userEmail; // Corrección aquí
+            const signleClassId = req.query.classId;
+            let query;
+            if(signleClassId){
+                query = { classId: signleClassId, userMail: userEmail };
+            } else {
+                query = { classId: { $in: classesId } };
+            }
+            const classesQuery = { _id: { $in: classesId.map(id => new ObjectId(id)) } };
+            try {
+                const classes = await classesCollection.find(classesQuery).toArray();
+                const newEnrolledData = {
+                    userEmail: userEmail,
+                    classId: classesId.map(id => new ObjectId(id)), // Corrección aquí
+                    trasnsactionId: paymentInfo.trasnsactionId, // Corregido "trasnsactionId" a "transactionId"
+                };
+                const updateDoc = {
+                    $set: {
+                        totalEnrolled: classes.reduce((total, current) => total + current.totalEnrolled, 0 ) + 1 || 0,
+                        availableSeats: classes.reduce((total, current) => total + current.availableSeats, 0) - 1 || 0,
+                    }
+                };
+                const updatedResult = await classesCollection.updateMany(classesQuery, updateDoc, { upsert : true });
+                const enrolledResult = await enrolledCollection.insertOne(newEnrolledData);
+                const deletedResult = await cartCollection.deleteMany(query);
+                const paymentResult = await paymentCollection.insertOne(paymentInfo);
 
-    //Obtener historial de pago
-    app.get("/payment-history/:email", async (req, res) => {
-        const email = req.params.email;
-        const query = { userEmail: email };
-        const result = await paymentCollection.find(query).sort({date: -1}).toArray();
-        res.send(result);
-    });
+                res.send({ paymentResult, deletedResult, enrolledResult, updatedResult });
+            } catch (error) {
+                res.status(500).send({ error: 'Error al procesar el pago' });
+            }
+        });
 
-    //payment history length
-    app.get("/payment-history-length/:email", async (req, res) => {
-        const email = req.params.email;
-        const query = { userEmail: email };
-        const total = await paymentCollection.countDocuments(query);
-        res.send({total});
-    });
+        // Obtener historial de pago
+        app.get("/payment-history/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = { userEmail: email };
+            try {
+                const result = await paymentCollection.find(query).sort({ date: -1 }).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener el historial de pagos' });
+            }
+        });
 
-    //Enrollment Routes
+        // Payment history length
+        app.get("/payment-history-length/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = { userEmail: email };
+            try {
+                const total = await paymentCollection.countDocuments(query);
+                res.send({ total });
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener la longitud del historial de pagos' });
+            }
+        });
 
-    // Ruta raíz
-    app.get('/', (req, res) => {
-        res.send('Hello World!');
-    });
+        // Enrollment Routes
+        app.get("/popular_classes", async (req, res) => {
+            try {
+                const result = await classesCollection.find().sort({ totalEnrolled: -1 }).limit(6).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener las clases populares' });
+            }
+        });
 
-    app.listen(port, () => {
-        console.log(`Example app listening on port ${port}`);
-    });
+        app.get('/popular-instructors', async (req, res) => {
+            const pipeline = [
+                {
+                    $group: {
+                        _id: "$instructorEmail",
+                        totalEnrolled: { $sum: "$totalEnrolled" }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: "user",
+                        localField: "_id",
+                        foreignField: "email",
+                        as: "instructor"
+                    }
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        instructor: { $arrayElemAt: ["$instructor", 0] },
+                        totalEnrolled: 1
+                    }
+                },
+                {
+                    $sort: { totalEnrolled: -1 }
+                },
+                { $limit: 6 }
+            ];
+            try {
+                const result = await classesCollection.aggregate(pipeline).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener los instructores populares' });
+            }
+        });
 
-} catch (error) {
-    console.error('Error al conectar a MongoDB:', error);
-}
+        //Admin Status
+        
+
+        // Ruta raíz
+        app.get('/', (req, res) => {
+            res.send('Hello World!');
+        });
+
+        app.listen(port, () => {
+            console.log(`Example app listening on port ${port}`);
+        });
+
+    } catch (error) {
+        console.error('Error al conectar a MongoDB:', error);
+    }
 }
 
 run().catch(console.dir);
+
