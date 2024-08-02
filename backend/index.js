@@ -5,6 +5,7 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.PAYMENT_SECRET);
+const jwt = require('jwt');
 
 // Middleware
 app.use(cors());
@@ -32,6 +33,61 @@ async function run() {
         const paymentCollection = database.collection("payment");
         const enrolledCollection = database.collection("enrolled");
         const appliendCollection = database.collection("appliend");
+
+        //routes for users
+        app.post('/new-user', async (req, res) => {
+            const newUser = req.body;
+            const result = await userCollections.insertOne(newUser);
+            res.send(result);
+        });
+
+        app.get('/users', async (req, res) => {
+            const result = await userCollections.find({}).toArray();
+            res.send(result);
+        });
+
+        app.get('/users/:id', async (req, res) => {
+            const id = reqparams.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await userCollections.findOne(query);
+            res.send(result);
+        })
+
+        app.get('/user/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+            const result = await userCollections.findOne(query);
+            res.send(result)
+        });
+
+        app.delete('/delete-user/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id)}; 
+            const result = await userCollections.deleteOne(query);
+            res.send(result);
+        });
+
+        app.put('/update-user/:id', async (req, res) => {
+            const id = req.params.id;
+            const updatedUser = req.body;
+            const filter = { _id: new ObjectId(id) };
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: {
+                    name: updatedUser.name,
+                    email: updatedUser.email,
+                    role: updatedUser.option,
+                    address: updatedUser.address,
+                    about:updatedUser.about,
+                    photoUrl: updatedUser.photoUrl,
+                    skills: updatedUser.skills ? updatedUser.skills : null,
+
+                }
+            }
+
+            const result = await userCollections.updateOne(filter, updateDoc, options);
+            res.send(result);
+        })
 
         // Ruta para crear una nueva clase
         app.post('/new-class', async (req, res) => {
@@ -225,7 +281,7 @@ async function run() {
             const userEmail = paymentInfo.userEmail; // Corrección aquí
             const signleClassId = req.query.classId;
             let query;
-            if(signleClassId){
+            if (signleClassId) {
                 query = { classId: signleClassId, userMail: userEmail };
             } else {
                 query = { classId: { $in: classesId } };
@@ -240,11 +296,11 @@ async function run() {
                 };
                 const updateDoc = {
                     $set: {
-                        totalEnrolled: classes.reduce((total, current) => total + current.totalEnrolled, 0 ) + 1 || 0,
+                        totalEnrolled: classes.reduce((total, current) => total + current.totalEnrolled, 0) + 1 || 0,
                         availableSeats: classes.reduce((total, current) => total + current.availableSeats, 0) - 1 || 0,
                     }
                 };
-                const updatedResult = await classesCollection.updateMany(classesQuery, updateDoc, { upsert : true });
+                const updatedResult = await classesCollection.updateMany(classesQuery, updateDoc, { upsert: true });
                 const enrolledResult = await enrolledCollection.insertOne(newEnrolledData);
                 const deletedResult = await cartCollection.deleteMany(query);
                 const paymentResult = await paymentCollection.insertOne(paymentInfo);
@@ -327,9 +383,9 @@ async function run() {
 
         //Admin Status
         app.get('/admin-status', async (req, res) => {
-            const approvedClasses = (await classesCollection.find({status: 'approved'})).toArray().length;
-            const pendingClasses = (await classesCollection.find({status: 'pending'})).toArray().length;
-            const instructors = (await userCollections.find({role: 'instructor'})).toArray().length;
+            const approvedClasses = (await classesCollection.find({ status: 'approved' })).toArray().length;
+            const pendingClasses = (await classesCollection.find({ status: 'pending' })).toArray().length;
+            const instructors = (await userCollections.find({ role: 'instructor' })).toArray().length;
             const totalClasses = (await classesCollection.find()).toArray().length;
             const totalEnrolled = (await enrolledCollection.find().toArray()).length;
 
@@ -345,7 +401,80 @@ async function run() {
         })
 
         //Get All Instructor
-        
+        app.get('/instructors', async (req, res) => {
+            const result = await userCollections.find({ role: 'instructor' }).toArray();
+            res.send(result);
+        });
+
+        // Ruta para obtener todos los instructores
+        app.get('/instructors', async (req, res) => {
+            try {
+                const result = await userCollections.find({ role: 'instructor' }).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener los instructores' });
+            }
+        });
+
+        // Ruta para obtener las clases inscritas por email
+        app.get('/enrolled-classes/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { userEmail: email };
+            const pipeline = [
+                {
+                    $match: query
+                },
+                {
+                    $lookup: {
+                        from: "classes",
+                        localField: "classId",
+                        foreignField: "_id",
+                        as: "classes"
+                    }
+                },
+                {
+                    $unwind: "$classes"
+                },
+                {
+                    $lookup: {
+                        from: "user",
+                        localField: "classes.instructorEmail",
+                        foreignField: "email",
+                        as: "instructors"
+                    }
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        instructor: {
+                            $arrayElemAt: ["$instructors", 0]
+                        },
+                        classes: 1
+                    }
+                }
+            ];
+
+            try {
+                const result = await enrolledCollection.aggregate(pipeline).toArray();
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ error: 'Error al obtener las clases inscritas' });
+            }
+        });
+
+        //appliend for instructors
+        app.post('/ass-instructor', async (req, res) => {
+
+            const data = req.body;
+            const result = await appliendCollection.insertOne(data);
+            res.send(result);
+        });
+
+        app.get('/applied-instructors/:email', async (req, res) => {
+            const email = req.params.email;
+            const result = await appliedCollection.findOne({email});
+            res.send(result);
+        })
 
         // Ruta raíz
         app.get('/', (req, res) => {
