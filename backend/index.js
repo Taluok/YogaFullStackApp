@@ -5,11 +5,28 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.PAYMENT_SECRET);
-const jwt = require('jwt');
+const jwt = require('jsonwebtoken');
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+//verify token
+const verifyJWT = (req, res, next) => {
+    const authorization = req.headers.authorization;
+    if(!authorization){
+        return res.status(401).send({message: 'Invalid authorization'})
+    }
+
+    const token = authorization?.split(' ')[1];
+    jwt.verify(token, process.env.ASSESS_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).send({message: 'Forbidden access'})
+        };
+        req.decoded = decoded;
+        next();
+    })
+}
 
 // Conexión a MongoDB
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@yoga-master.hbq1wck.mongodb.net/?appName=yoga-master`;
@@ -35,6 +52,37 @@ async function run() {
         const appliendCollection = database.collection("appliend");
 
         //routes for users
+        app.post('/api/set-token', async (req, res) => {
+            const user = req.body;
+            const token = jwt.sign(user, process.env.ASSESS_SECRET,{
+                expiresIn: '24h'
+            });
+            res.send({token})
+        })
+
+        //Middleware for admin and instructor
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.body.email;
+            const query = { email: email};
+            const user = await userCollection.findOne(query);
+            if(user.role === 'admin'){
+                next();
+            }else{
+                return res.status(401).send({message: 'Forbidden access'})
+            }
+        }
+
+        const verifyInstructor = async (req, res, next) => {
+            const email = req.body.email;
+            const query = { email: email };
+            const user = await usersCollection.findOne(query);
+            if(user.role === 'instructor'){
+                next();
+            }else{
+                return res.status(401).send({message: 'Unauthorized access'})
+            }
+        };
+
         app.post('/new-user', async (req, res) => {
             const newUser = req.body;
             const result = await userCollections.insertOne(newUser);
@@ -53,21 +101,21 @@ async function run() {
             res.send(result);
         })
 
-        app.get('/user/:email', async (req, res) => {
+        app.get('/user/:email',verifyJWT, async (req, res) => {
             const email = req.params.email;
             const query = { email: email };
             const result = await userCollections.findOne(query);
             res.send(result)
         });
 
-        app.delete('/delete-user/:id', async (req, res) => {
+        app.delete('/delete-user/:id', verifyJWT, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id)}; 
             const result = await userCollections.deleteOne(query);
             res.send(result);
         });
 
-        app.put('/update-user/:id', async (req, res) => {
+        app.put('/update-user/:id', verifyJWT, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const updatedUser = req.body;
             const filter = { _id: new ObjectId(id) };
@@ -90,7 +138,7 @@ async function run() {
         })
 
         // Ruta para crear una nueva clase
-        app.post('/new-class', async (req, res) => {
+        app.post('/new-class', verifyJWT, verifyInstructor, async (req, res) => {
             const newClass = req.body;
             try {
                 const result = await classesCollection.insertOne(newClass);
@@ -112,7 +160,7 @@ async function run() {
         });
 
         // Ruta para obtener clases por instructor
-        app.get('/classes/:email', async (req, res) => {
+        app.get('/classes/:email', verifyJWT, verifyInstructor, async (req, res) => {
             const email = req.params.email;
             const query = { instructorEmail: email };
             try {
@@ -134,7 +182,7 @@ async function run() {
         });
 
         // Actualizar estado y motivo de las clases
-        app.patch('/change-status/:id', async (req, res) => {
+        app.patch('/change-status/:id', verifyJWT, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const { status, reason } = req.body;
             const filter = { _id: new ObjectId(id) };
@@ -177,7 +225,7 @@ async function run() {
         });
 
         // Actualizar detalles de la clase (todos los datos)
-        app.put('/update-class/:id', async (req, res) => {
+        app.put('/update-class/:id', verifyJWT, verifyInstructor, async (req, res) => {
             const id = req.params.id;
             const updateClass = req.body;
             const filter = { _id: new ObjectId(id) };
@@ -201,7 +249,7 @@ async function run() {
         });
 
         // Cart Routes
-        app.post('/add-to-cart', async (req, res) => {
+        app.post('/add-to-cart',verifyJWT, async (req, res) => {
             const newCartItem = req.body;
             try {
                 const result = await cartCollection.insertOne(newCartItem);
@@ -212,7 +260,7 @@ async function run() {
         });
 
         // Obtener Cart Item con id
-        app.get('/cart-item/:id', async (req, res) => {
+        app.get('/cart-item/:id', verifyJWT, async (req, res) => {
             const id = req.params.id;
             const email = req.body.email;
             const query = {
@@ -229,7 +277,7 @@ async function run() {
         });
 
         // Informacion de cart con mail de usuario 
-        app.get('/cart/:email', async (req, res) => {
+        app.get('/cart/:email', verifyJWT, async (req, res) => {
             const email = req.params.email;
             const query = { userMail: email };
             const projection = { classId: 1 };
@@ -245,7 +293,7 @@ async function run() {
         });
 
         // Eliminar item del carro
-        app.delete('/delete-cart-item/:id', async (req, res) => {
+        app.delete('/delete-cart-item/:id', verifyJWT, async (req, res) => {
             const id = req.params.id;
             const query = { classId: id };
             try {
